@@ -20,6 +20,8 @@ describe('story domain rules', () => {
   it('rejects corrupt persisted documents', () => {
     expect(sanitizeStory('{bad json}')).toBeNull();
     expect(sanitizeStory({ version: 99 })).toBeNull();
+    expect(sanitizeStory({ ...createStarterStory(), characters: [{ id: 'broken' }] })).toBeNull();
+    expect(sanitizeStory({ ...createStarterStory(), scenes: [{ ...createStarterStory().scenes[0], order: '1' }] })).toBeNull();
     expect(sanitizeStory(createStarterStory())).not.toBeNull();
   });
 });

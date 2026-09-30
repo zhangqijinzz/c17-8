@@ -7,8 +7,9 @@ import {
   type StoryDocument,
   type StoryScene,
 } from '../models/story';
+import { exportStoryToMarkdown, parseStoryTransferFile } from '../models/storyTransfer';
 import { getStats, getTimelineWarning, orderedScenes, validateName } from '../models/storyRules';
-import type { StoryRepository } from '../repositories/storyRepository';
+import type { ProjectSummary, StoryRepository } from '../repositories/storyRepository';
 
 export type ViewModelStatus = 'loading' | 'ready' | 'editing' | 'error' | 'completed';
 
@@ -18,6 +19,8 @@ export interface StoryViewState {
   stats: ReturnType<typeof getStats>;
   notice: string;
   error: string;
+  importWarnings: string[];
+  projects: ProjectSummary[];
   search: string;
   activeSection: 'overview' | 'characters' | 'clues';
 }
@@ -31,6 +34,8 @@ export class StoryViewModel {
     stats: { characters: 0, scenes: 0, clues: 0, unresolvedClues: 0, completion: 0 },
     notice: '',
     error: '',
+    importWarnings: [],
+    projects: [],
     search: '',
     activeSection: 'overview',
   };
@@ -50,9 +55,19 @@ export class StoryViewModel {
   initialize(): void {
     try {
       const story = this.repository.load();
-      this.setState({ status: story.status === 'complete' ? 'completed' : 'ready', story, stats: getStats(story), error: '' });
-    } catch {
-      this.setState({ status: 'error', error: '故事读取失败，请重置为示例项目。' });
+      this.setState({
+        status: story.status === 'complete' ? 'completed' : 'ready',
+        story,
+        projects: this.repository.listProjects(),
+        stats: getStats(story),
+        error: '',
+        importWarnings: [],
+      });
+    } catch (error) {
+      this.setState({
+        status: 'error',
+        error: `故事读取失败：${error instanceof Error ? error.message : '本地数据无法解析'}。当前项目未被改动。`,
+      });
     }
   }
 
@@ -66,6 +81,58 @@ export class StoryViewModel {
 
   selectScene(sceneId: string): void {
     this.updateStory((story) => ({ ...story, selectedSceneId: sceneId }));
+  }
+
+  switchProject(projectId: string): void {
+    if (projectId === this.state.story?.id) return;
+    try {
+      const story = this.repository.switchProject(projectId);
+      this.setState({
+        status: story.status === 'complete' ? 'completed' : 'ready',
+        story,
+        stats: getStats(story),
+        projects: this.repository.listProjects(),
+        notice: `已切换到项目「${story.title}」`,
+        error: '',
+        importWarnings: [],
+        search: '',
+      });
+    } catch (error) {
+      this.setState({ error: `项目切换失败：${error instanceof Error ? error.message : '请稍后重试'}。` });
+    }
+  }
+
+  dismissImportWarnings(): void {
+    this.setState({ importWarnings: [] });
+  }
+
+  exportCurrentProject(): string {
+    return exportStoryToMarkdown(this.requireStory());
+  }
+
+  importProjectFile(content: string): void {
+    const result = parseStoryTransferFile(content);
+    if (!result.story || result.errors.length) {
+      this.setState({
+        error: result.errors.join(' ') || '导入文件无法解析，当前项目没有被修改。',
+      });
+      return;
+    }
+
+    try {
+      const imported = this.repository.importProject(result.story);
+      this.setState({
+        status: imported.status === 'complete' ? 'completed' : 'ready',
+        story: imported,
+        stats: getStats(imported),
+        projects: this.repository.listProjects(),
+        notice: `已将「${imported.title}」导入为新项目，当前项目保持不变。`,
+        error: '',
+        importWarnings: result.warnings,
+      });
+    } catch (error) {
+      this.setState({ error: `导入项目保存失败：${error instanceof Error ? error.message : '浏览器存储不可用'}。当前项目没有被修改。` });
+    }
   }
 
   addCharacter(name: string, role: string): void {
@@ -144,23 +211,35 @@ export class StoryViewModel {
       return;
     }
     const clue: StoryClue = { id: createId('clue'), title: cleanTitle, setupSceneId, payoffSceneId };
-    this.updateStory((story) => ({
-      ...story,
-      clues: [...story.clues, clue],
-      scenes: story.scenes.map((scene) => scene.id === setupSceneId ? { ...scene, clueIds: [...scene.clueIds, clue.id] } : scene),
-    }));
+    this.updateStory((story) => {
+      const linkedSceneIds = [...new Set([setupSceneId, payoffSceneId].filter(Boolean))];
+      return {
+        ...story,
+        clues: [...story.clues, clue],
+        scenes: story.scenes.map((scene) => linkedSceneIds.includes(scene.id)
+          ? { ...scene, clueIds: [...scene.clueIds, clue.id] }
+          : scene),
+      };
+    });
     this.setState({ notice: payoffSceneId ? '伏笔关系已建立' : '伏笔已记录，等待回收' });
   }
 
   completeProject(): void {
-    this.updateStory((story) => ({ ...story, status: 'complete' }));
-    this.setState({ status: 'completed', notice: '项目已标记为完成，仍可继续编辑' });
+    this.updateStory((story) => ({ ...story, status: 'complete' }), false);
+    if (!this.state.error) this.setState({ status: 'completed', notice: '项目已标记为完成，仍可继续编辑' });
   }
 
   resetProject(): void {
-    const story = createStarterStory();
-    this.persist(story);
-    this.setState({ status: 'ready', story, stats: getStats(story), notice: '已恢复示例项目', error: '' });
+    const story = this.repository.replaceActiveProject(createStarterStory());
+    this.setState({
+      status: 'ready',
+      story,
+      projects: this.repository.listProjects(),
+      stats: getStats(story),
+      notice: '当前项目已替换为示例项目，其他项目保持不变',
+      error: '',
+      importWarnings: [],
+    });
   }
 
   get visibleCharacters(): StoryCharacter[] {
@@ -192,15 +271,22 @@ export class StoryViewModel {
 
   private updateStory(updater: (story: StoryDocument) => StoryDocument, showEditing = true): void {
     const story = updater(this.requireStory());
-    this.persist(story);
-    this.setState({ story, stats: getStats(story), status: showEditing ? 'editing' : this.state.status, error: '' });
+    const saved = this.persist(story);
+    this.setState({
+      story,
+      stats: getStats(story),
+      status: saved ? (showEditing ? 'editing' : this.state.status) : 'error',
+      ...(saved ? { error: '', projects: this.repository.listProjects() } : {}),
+    });
   }
 
-  private persist(story: StoryDocument): void {
+  private persist(story: StoryDocument): boolean {
     try {
       this.repository.save({ ...story, updatedAt: new Date().toISOString() });
+      return true;
     } catch {
       this.setState({ status: 'error', error: '保存失败，但当前编辑仍保留在页面中。' });
+      return false;
     }
   }
 

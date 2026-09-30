@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react';
 import { LocalStoryRepository } from '../repositories/storyRepository';
-import { BrowserStorageService } from '../services/storageService';
+import { BrowserProjectLibraryStorage } from '../services/storageService';
 import { StoryViewModel } from '../viewmodels/storyViewModel';
 
-const viewModel = new StoryViewModel(new LocalStoryRepository(new BrowserStorageService()));
+const viewModel = new StoryViewModel(new LocalStoryRepository(new BrowserProjectLibraryStorage()));
 
 export function useStoryViewModel(): StoryViewModel {
   const [, refresh] = useState(0);

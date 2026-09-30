@@ -1,4 +1,4 @@
-import type { StoryDocument, StoryScene, StoryStats } from './story';
+import { characterColors, type StoryDocument, type StoryScene, type StoryStats } from './story';
 
 export function orderedScenes(story: StoryDocument): StoryScene[] {
   return [...story.scenes].sort((a, b) => a.order - b.order);
@@ -28,18 +28,55 @@ export function getTimelineWarning(story: StoryDocument): string | null {
   return new Set(orders).size !== orders.length ? '时间线存在重复顺序，请重新排列。' : null;
 }
 
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === 'string');
+}
+
 export function sanitizeStory(input: unknown): StoryDocument | null {
-  if (!input || typeof input !== 'object') return null;
-  const candidate = input as Partial<StoryDocument>;
+  if (!isObjectRecord(input)) return null;
   if (
-    candidate.version !== 1 ||
-    typeof candidate.id !== 'string' ||
-    typeof candidate.title !== 'string' ||
-    !Array.isArray(candidate.characters) ||
-    !Array.isArray(candidate.scenes) ||
-    !Array.isArray(candidate.clues)
+    input.version !== 1 ||
+    typeof input.id !== 'string' ||
+    typeof input.title !== 'string' ||
+    (input.status !== 'draft' && input.status !== 'complete') ||
+    typeof input.selectedSceneId !== 'string' ||
+    typeof input.updatedAt !== 'string' ||
+    !Array.isArray(input.characters) ||
+    !Array.isArray(input.scenes) ||
+    !Array.isArray(input.clues)
   ) {
     return null;
   }
-  return candidate as StoryDocument;
+
+  const characters = input.characters.every((character) =>
+    isObjectRecord(character) &&
+    typeof character.id === 'string' &&
+    typeof character.name === 'string' &&
+    typeof character.role === 'string' &&
+    typeof character.color === 'string' &&
+    characterColors.includes(character.color as typeof characterColors[number])
+  );
+  const scenes = input.scenes.every((scene) =>
+    isObjectRecord(scene) &&
+    typeof scene.id === 'string' &&
+    typeof scene.title === 'string' &&
+    typeof scene.order === 'number' &&
+    typeof scene.summary === 'string' &&
+    typeof scene.conflict === 'string' &&
+    isStringArray(scene.characterIds) &&
+    isStringArray(scene.clueIds)
+  );
+  const clues = input.clues.every((clue) =>
+    isObjectRecord(clue) &&
+    typeof clue.id === 'string' &&
+    typeof clue.title === 'string' &&
+    typeof clue.setupSceneId === 'string' &&
+    typeof clue.payoffSceneId === 'string'
+  );
+
+  return characters && scenes && clues ? input as StoryDocument : null;
 }

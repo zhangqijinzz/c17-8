@@ -1,3 +1,5 @@
+export const CURRENT_STORY_VERSION = 1;
+
 export type StoryStatus = 'draft' | 'complete';
 
 export interface StoryCharacter {
